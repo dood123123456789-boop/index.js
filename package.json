@@ -1,0 +1,14 @@
+{
+  "name": "chat-bot",
+  "version": "1.0.0",
+  "description": "Chat bot for sanime",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "express": "^4.18.2",
+    "node-fetch": "^2.6.7"
+  }
+}

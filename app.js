@@ -203,7 +203,7 @@ app.get("/stop", (req, res) => {
 });
 
 // ============== Keep-alive ==============
-const KEEP_ALIVE_URL = "https://acc-9hhh.onrender.com/";
+const KEEP_ALIVE_URL = "https://index-js-x3yc.onrender.com/";
 setInterval(() => {
   fetch(KEEP_ALIVE_URL)
     .then(() => console.log("🔁 Keep-alive"))

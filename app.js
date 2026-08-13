@@ -14,7 +14,7 @@ const BATCH_SIZE = 20;
 const BATCH_DELAY = 120000;
 const ACCOUNTS = [];
 for (let i = 100; i <= 3500; i++) {
-    ACCOUNTS.push({ email: `acco${i}@gmail.com`, password: "acco123" });
+    ACCOUNTS.push({ email: `tyt${i}@gmail.com`, password: "tyt123" });
 }
 
 let isRunning = false;

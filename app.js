@@ -6,25 +6,31 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// ============== إعدادات ==============
-const TARGET_USER_ID = "49607";
-const ANIME_ID = "529";
-const EPISODE = 2;
-const BATCH_SIZE = 20;
-const BATCH_DELAY = 120000;
-const ACCOUNTS = [];
-for (let i = 100; i <= 3500; i++) {
-    ACCOUNTS.push({ email: `tyt${i}@gmail.com`, password: "tyt123" });
-}
-
-let isRunning = false;
-let totalProcessed = 0;
-let totalPointsSent = 0;
-let currentBatch = 0;
-let lastAccount = "";
-
-// ============== self-ping ==============
+// ============== إعدادات Render ==============
+// ضع رابط خدمتك على Render هنا (مثال: https://your-service.onrender.com/)
 const SELF_URL = "https://poi4.onrender.com/";
+
+// ============== إعدادات الحساب ==============
+const AUTH_TOKEN = "e2640097bfe27b751398218b604b1fc363274cf524139845badd2d3578225892"; // التوكن الثابت
+
+// ============== إعدادات المشاهدة ==============
+const ANIME_ID = "658";              // معرف الأنمي
+const TOTAL_EPISODES = 1100;         // عدد الحلقات الإجمالي الذي تريد المرور عليه
+const GROUP_SIZE = 45;               // عدد الحلقات المتوازية (المطلوب 20)
+const HEARTBEAT_INTERVAL_MS = 61000; // مدة الانتظار قبل كل نبضة (60 ثانية)
+const MAX_HEARTBEATS = 20;           // الحد الأقصى لمحاولات النبض (مثل الكود السابق)
+const INITIAL_POSITION = 60;         // أول موضع تقدم
+const POSITION_STEP = 60;            // الزيادة في الموضع عند كل نبضة
+const CHUNK_DELAY_MS = 5000;         // مهلة صغيرة بين المجموعات
+
+// ============== الحالة ==============
+let isRunning = false;
+let currentChunk = 0;
+let totalEpisodesProcessed = 0;
+let totalSuccessSessions = 0;
+let lastError = "";
+
+// ============== self-ping (لإبقاء Render نشطًا) ==============
 setInterval(() => {
     axios.get(SELF_URL).catch(() => {});
     console.log("Keep-alive ping to " + SELF_URL);
@@ -86,7 +92,7 @@ async function apiPost(url, data, token, identity) {
     try {
         return await axios.post(url, data, {
             headers: buildHeaders(token, identity),
-            timeout: 8000,
+            timeout: 10000,
             httpsAgent: createSecureAgent()
         });
     } catch (err) { throw err; }
@@ -96,241 +102,132 @@ async function apiGet(url, token, identity) {
     try {
         return await axios.get(url, {
             headers: buildHeaders(token, identity),
-            timeout: 8000,
+            timeout: 10000,
             httpsAgent: createSecureAgent()
         });
     } catch (err) { throw err; }
-}
-
-async function apiDelete(url, token, identity) {
-    try {
-        return await axios.delete(url, {
-            headers: buildHeaders(token, identity),
-            timeout: 8000,
-            httpsAgent: createSecureAgent()
-        });
-    } catch (err) { throw err; }
-}
-
-async function login(email, password, identity) {
-    try {
-        const res = await apiPost(
-            "https://app.sanime.net/anime-ar/backend/api/auth.php?action=login",
-            { email, password }, null, identity
-        );
-        if (res.data?.success && res.data.token) {
-            return { success: true, token: res.data.token, userId: res.data.user?.id || res.data.user_id };
-        }
-        return { success: false };
-    } catch (err) { return { success: false }; }
-}
-
-async function spinWheel(token, identity) {
-    try {
-        const res = await apiPost(
-            "https://app.sanime.net/anime-ar/backend/api/points.php?action=spin",
-            {}, token, identity
-        );
-        if (res.data && !res.data.error) {
-            return { success: true, points: res.data.points || res.data.reward || 0 };
-        } else if (res.data?.error === "SPIN_IP_CONFLICT") {
-            return { success: false, conflict: true };
-        }
-        return { success: false };
-    } catch (err) { return { success: false }; }
 }
 
 async function startWatch(token, animeId, episode, identity) {
     try {
         const res = await apiPost(
             "https://app.sanime.net/anime-ar/backend/api/points.php?action=start_watch",
-            { anime_id: animeId, episode }, token, identity
+            { anime_id: animeId, episode },
+            token,
+            identity
         );
         return res.data?.session_token || null;
-    } catch (err) { return null; }
+    } catch (err) {
+        return null;
+    }
 }
 
 async function sendHeartbeat(token, sessionToken, position, identity) {
     try {
         const res = await apiPost(
             "https://app.sanime.net/anime-ar/backend/api/points.php?action=watch_heartbeat",
-            { session_token: sessionToken, position }, token, identity
+            { session_token: sessionToken, position },
+            token,
+            identity
         );
         return res.data;
-    } catch (err) { return null; }
+    } catch (err) {
+        return null;
+    }
 }
 
 async function getBalance(token, identity) {
     try {
         const res = await apiGet(
             "https://app.sanime.net/anime-ar/backend/api/points.php?action=balance",
-            token, identity
+            token,
+            identity
         );
         return res.data?.balance || 0;
-    } catch (err) { return 0; }
-}
-
-async function sendGift(token, toUserId, points, identity) {
-    try {
-        const res = await apiPost(
-            "https://app.sanime.net/anime-ar/backend/api/points.php?action=send_gift",
-            { to_user_id: parseInt(toUserId), points }, token, identity
-        );
-        if (res.data && !res.data.error) {
-            return { success: true };
-        }
-        return { success: false };
-    } catch (err) { return { success: false }; }
-}
-
-async function fetchPosts(token, identity) {
-    try {
-        const res = await apiGet(
-            "https://app.sanime.net/anime-ar/backend/api/community.php?type=posts",
-            token, identity
-        );
-        return res.data?.posts || [];
-    } catch (err) { return []; }
-}
-
-async function deletePost(token, postId, identity) {
-    try {
-        const res = await apiDelete(
-            `https://app.sanime.net/anime-ar/backend/api/community.php?type=posts&post_id=${postId}`,
-            token, identity
-        );
-        return res.data?.success === true || res.status === 200;
-    } catch (err) { return false; }
-}
-
-// ============== حذف هدايا حتى نجاح واحد ==============
-async function deleteGiftPosts(token, identity) {
-    let successOnce = false;
-    for (let round = 0; round < 3; round++) {
-        const posts = await fetchPosts(token, identity);
-        const targetGiftPosts = posts.filter(
-            post => post.is_gift === true && post.gift_to_user_id === parseInt(TARGET_USER_ID)
-        );
-        if (targetGiftPosts.length === 0) {
-            return true;
-        }
-        for (const post of targetGiftPosts) {
-            const postId = post.id;
-            for (let attempt = 0; attempt < 3; attempt++) {
-                if (await deletePost(token, postId, identity)) {
-                    successOnce = true;
-                    console.log(`[D] Deleted gift post #${postId} (${post.user})`);
-                    break;
-                }
-                await new Promise(r => setTimeout(r, 500));
-            }
-            if (successOnce) break;
-        }
-        if (successOnce) break;
-        await new Promise(r => setTimeout(r, 2000));
+    } catch (err) {
+        return 0;
     }
-    return successOnce;
 }
 
-// ============== معالجة حساب واحد ==============
-async function processAccount(acc) {
-    console.log(`[>] ${acc.email}`);
+// ============== معالجة حلقة واحدة ==============
+async function processEpisode(episode) {
     const identity = {
         ip: randomIP(),
         deviceId: uuidv4(),
         userAgent: userAgents[Math.floor(Math.random() * userAgents.length)]
     };
 
-    const loginRes = await login(acc.email, acc.password, identity);
-    if (!loginRes.success) {
-        console.log(`[X] Login failed: ${acc.email}`);
-        return { success: false, email: acc.email };
-    }
-    const token = loginRes.token;
-    const userId = loginRes.userId;
-    console.log(`[OK] Login: ${acc.email} (ID: ${userId})`);
-
-    const spinRes = await spinWheel(token, identity);
-    if (spinRes.success) console.log(`[*] Spin OK: ${acc.email}`);
-    else console.log(`[-] Spin failed (continue): ${acc.email}`);
-
-    const sessionToken = await startWatch(token, ANIME_ID, EPISODE, identity);
+    // بدء جلسة المشاهدة
+    const sessionToken = await startWatch(AUTH_TOKEN, ANIME_ID, episode, identity);
     if (!sessionToken) {
-        console.log(`[X] Watch start failed: ${acc.email}`);
-        return { success: false, email: acc.email };
+        console.log(`[X] Watch start failed: EP ${episode}`);
+        return { success: false, episode };
     }
+    console.log(`[>] EP ${episode} - Session started`);
 
-    let position = 60;
+    let position = INITIAL_POSITION;
     let gotPoints = false;
-    for (let i = 0; i < 20; i++) {
-        const hbRes = await sendHeartbeat(token, sessionToken, position, identity);
+
+    for (let i = 0; i < MAX_HEARTBEATS; i++) {
+        await new Promise(r => setTimeout(r, HEARTBEAT_INTERVAL_MS));
+        const hbRes = await sendHeartbeat(AUTH_TOKEN, sessionToken, position, identity);
         if (hbRes?.points_awarded_now) {
             gotPoints = true;
+            console.log(`[✓] EP ${episode} - Points awarded at position ${position}`);
             break;
         }
-        position += 60;
-        await new Promise(r => setTimeout(r, 61000));
+        console.log(`[~] EP ${episode} - heartbeat ${i + 1} no points (position ${position})`);
+        position += POSITION_STEP;
     }
+
     if (!gotPoints) {
-        console.log(`[-] No points from watch: ${acc.email}`);
-        return { success: false, email: acc.email };
+        console.log(`[-] EP ${episode} - No points after ${MAX_HEARTBEATS} heartbeats`);
+        return { success: false, episode };
     }
 
-    const balance = await getBalance(token, identity);
-    console.log(`[$] Balance: ${balance} (${acc.email})`);
-    if (balance < 10) {
-        console.log(`[-] Balance < 10: ${acc.email}`);
-        return { success: false, email: acc.email };
-    }
-
-    const giftRes = await sendGift(token, TARGET_USER_ID, balance, identity);
-    if (!giftRes.success) {
-        console.log(`[X] Gift failed: ${acc.email}`);
-        return { success: false, email: acc.email };
-    }
-    totalPointsSent += balance;
-    console.log(`[G] Sent ${balance} pts to ${TARGET_USER_ID}`);
-
-    const deleteSuccess = await deleteGiftPosts(token, identity);
-    if (!deleteSuccess) {
-        console.log(`[!] Could not delete any gift post for ${acc.email}`);
-    }
-
-    lastAccount = acc.email;
-    return { success: true, email: acc.email };
+    return { success: true, episode };
 }
 
-// ============== دفعات ==============
-async function processBatch(startIdx) {
-    const batch = ACCOUNTS.slice(startIdx, startIdx + BATCH_SIZE);
-    console.log(`\n=== Batch ${currentBatch + 1}: ${batch.length} accounts ===`);
-    const tasks = batch.map(acc => processAccount(acc));
-    const results = await Promise.allSettled(tasks);
-    const succeeded = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
-    totalProcessed += succeeded;
-    console.log(`Batch completed: ${succeeded}/${batch.length} succeeded. Total processed: ${totalProcessed}`);
-}
-
+// ============== تشغيل المجموعات ==============
 async function mainLoop() {
-    if (!isRunning) return;
-    for (let i = 0; i < ACCOUNTS.length; i += BATCH_SIZE) {
+    if (isRunning) return;
+    isRunning = true;
+    totalEpisodesProcessed = 0;
+    totalSuccessSessions = 0;
+    currentChunk = 0;
+    lastError = "";
+
+    console.log("[>] Started concurrent watch with one token");
+    console.log(`Anime: ${ANIME_ID}, Episodes: 1-${TOTAL_EPISODES}, Group size: ${GROUP_SIZE}`);
+
+    for (let startEp = 1; startEp <= TOTAL_EPISODES; startEp += GROUP_SIZE) {
         if (!isRunning) break;
-        await processBatch(i);
-        currentBatch++;
-        await new Promise(r => setTimeout(r, BATCH_DELAY));
+
+        const endEp = Math.min(startEp + GROUP_SIZE - 1, TOTAL_EPISODES);
+        const episodes = Array.from({ length: endEp - startEp + 1 }, (_, i) => startEp + i);
+        currentChunk = Math.floor((startEp - 1) / GROUP_SIZE) + 1;
+        console.log(`\n=== Chunk ${currentChunk}: Episodes ${startEp}-${endEp} ===`);
+
+        // بدء جميع الحلقات في نفس الوقت
+        const results = await Promise.allSettled(episodes.map(ep => processEpisode(ep)));
+
+        const succeeded = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+        totalEpisodesProcessed += episodes.length;
+        totalSuccessSessions += succeeded;
+        console.log(`Chunk ${currentChunk} finished: ${succeeded}/${episodes.length} sessions with points`);
+
+        if (endEp < TOTAL_EPISODES) {
+            console.log(`Waiting ${CHUNK_DELAY_MS / 1000}s before next chunk...`);
+            await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+        }
     }
-    console.log("All accounts processed.");
+
+    console.log("All chunks processed.");
     isRunning = false;
 }
 
 function startProcess() {
     if (isRunning) return;
-    isRunning = true;
-    totalProcessed = 0;
-    totalPointsSent = 0;
-    currentBatch = 0;
-    lastAccount = "";
-    console.log("[>] Started spin+watch+gift+delete");
     mainLoop();
 }
 
@@ -352,15 +249,17 @@ app.get("/", (req, res) => {
         .label { font-size: 0.8em; color: #8b949e; }
         a { text-decoration: none; }
         .highlight { color: #fbbf24; font-weight: bold; }
+        .token { color: #8b949e; font-size: 0.8em; word-break: break-all; }
     </style></head><body>
-        <h2>Spin + Watch + Gift + Delete Bot</h2>
+        <h2>Concurrent Watch Bot (One Token)</h2>
         <div class="section">
             <p><b>Status:</b> ${isRunning ? 'Running' : 'Stopped'}</p>
-            <p><b>Batch:</b> ${currentBatch + 1} / ${Math.ceil(ACCOUNTS.length / BATCH_SIZE)}</p>
-            <p><b>Last account:</b> <span class="highlight">${lastAccount || 'None'}</span></p>
+            <p><b>Current Chunk:</b> ${currentChunk} / ${Math.ceil(TOTAL_EPISODES / GROUP_SIZE)}</p>
+            <p><b>Token:</b> <span class="token">${AUTH_TOKEN.slice(0, 12)}...${AUTH_TOKEN.slice(-8)}</span></p>
+            <p><b>Anime ID:</b> ${ANIME_ID} | <b>Total Episodes:</b> ${TOTAL_EPISODES} | <b>Group Size:</b> ${GROUP_SIZE}</p>
             <div>
-                <div class="stat"><div class="num">${totalProcessed}</div><div class="label">Processed</div></div>
-                <div class="stat"><div class="num">${totalPointsSent}</div><div class="label">Points Sent</div></div>
+                <div class="stat"><div class="num">${totalEpisodesProcessed}</div><div class="label">Episodes Processed</div></div>
+                <div class="stat"><div class="num">${totalSuccessSessions}</div><div class="label">Successful Watch Sessions</div></div>
             </div>
         </div>
         <div class="section">
@@ -378,6 +277,5 @@ app.get("/stop", (req, res) => { stopProcess(); res.redirect("/"); });
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Server: http://localhost:${PORT}`);
-    console.log(`Mode: ${BATCH_SIZE} concurrent, ${BATCH_DELAY/1000}s between batches`);
-    console.log(`Self-ping to ${SELF_URL} every 14 minutes`);
-});
+    console.log(`Keep-alive: ${SELF_URL}`);
+    console.log(`Mode: ${GROUP_SIZE} concurrent episodes from 1 to ${TOTAL_EPISODES}`);
